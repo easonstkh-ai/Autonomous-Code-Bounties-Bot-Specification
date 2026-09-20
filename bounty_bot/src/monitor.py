@@ -262,6 +262,7 @@ class IssueMonitor:
             ]
             endpoint = 'https://api.github.com/search/issues'
             seen_issue_urls = set()
+            language_cache = {}
 
             for search_query in search_queries:
                 params = {
@@ -290,20 +291,26 @@ class IssueMonitor:
                                 continue
                             seen_issue_urls.add(issue_url)
 
-                        # Extract repository language
-                            repo_name = item.get('repository_url', '').split('/')[-1]
-                            repo_owner = item.get('repository_url', '').split('/')[-2]
-                            language = self._get_github_repo_language(repo_owner, repo_name, headers)
-
-                        # Check if matches language filter
-                            if language and language not in self.config['filters']['languages']:
-                                logger.debug(f"✗ Skipped (language {language}): {item.get('title')}")
-                                continue
-
                         # Try to extract bounty amount from issue body/title
                             bounty_amount = self._extract_bounty_amount(item)
                             if bounty_amount < self.config['filters']['min_bounty_amount']:
                                 logger.debug(f"✗ Skipped (bounty ${bounty_amount}): {item.get('title')}")
+                                continue
+
+                        # Fetch language only for bounty candidates and reuse it per repository.
+                            repository_url = item.get('repository_url', '')
+                            repo_name = repository_url.rsplit('/', 1)[-1]
+                            repo_owner = repository_url.rstrip('/').rsplit('/', 1)[-1]
+                            repository_key = f"{repo_owner}/{repo_name}"
+                            if repository_key not in language_cache:
+                                language_cache[repository_key] = self._get_github_repo_language(
+                                    repo_owner, repo_name, headers
+                                )
+                            language = language_cache[repository_key]
+
+                        # Check if matches language filter
+                            if language and language not in self.config['filters']['languages']:
+                                logger.debug(f"✗ Skipped (language {language}): {item.get('title')}")
                                 continue
 
                             issue = self._parse_github_issue(item, language, bounty_amount)
