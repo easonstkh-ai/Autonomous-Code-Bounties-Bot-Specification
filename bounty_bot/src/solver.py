@@ -231,7 +231,12 @@ class LLMSolver:
             # Parse response
             diff_text = self._extract_diff_from_response(llm_response)
             changes_summary = self._extract_summary_from_response(llm_response)
-            
+
+            # LLMs sometimes drop directory prefixes (e.g. ".github/") from
+            # diff headers; fix those against the real repo layout so the
+            # diff is still applicable.
+            diff_text = self._resolve_diff_paths(diff_text, repository_path)
+
             # Validate diff
             files_affected = self._parse_diff(diff_text)
             confidence_score = self._calculate_confidence_score(diff_text, len(files_affected))
@@ -460,7 +465,49 @@ Focus on the minimal changes needed to resolve the issue."""
             return response[:start].strip()[:200]
         
         return "Patch generated to fix the issue"
-    
+
+    def _resolve_diff_paths(self, diff: str, repository_path: str) -> str:
+        """
+        Rewrite diff header paths that don't exist in the repo to the real
+        path, when exactly one repo file unambiguously matches.
+
+        LLMs occasionally drop leading directory segments (e.g. write
+        "workflows/stale.yml" instead of ".github/workflows/stale.yml"),
+        which makes an otherwise-correct diff unapplicable.
+        """
+        try:
+            repo_files = []
+            for root, dirs, files in os.walk(repository_path):
+                dirs[:] = [d for d in dirs if d != '.git']
+                for f in files:
+                    rel = os.path.relpath(os.path.join(root, f), repository_path)
+                    repo_files.append(rel.replace(os.sep, '/'))
+        except OSError:
+            return diff
+
+        def resolve_path(path: str) -> Optional[str]:
+            norm = path.strip().replace('\\', '/').lstrip('/')
+            if not norm or norm == 'dev/null':
+                return None
+            if os.path.exists(os.path.join(repository_path, norm)):
+                return None  # already correct, nothing to do
+            candidates = [rf for rf in repo_files if rf == norm or rf.endswith('/' + norm)]
+            if len(candidates) != 1:
+                basename = norm.rsplit('/', 1)[-1]
+                candidates = [rf for rf in repo_files if rf.rsplit('/', 1)[-1] == basename]
+            return candidates[0] if len(candidates) == 1 else None
+
+        def fix_header_line(match: re.Match) -> str:
+            marker, prefix, path, trailing = match.group(1), match.group(2) or '', match.group(3), match.group(4) or ''
+            resolved = resolve_path(path)
+            if resolved:
+                logger.info(f"Resolved diff path '{path}' -> '{resolved}'")
+                return f"{marker} {prefix}{resolved}{trailing}"
+            return match.group(0)
+
+        pattern = re.compile(r'^(---|\+\+\+)\s+((?:a/|b/)?)(.+?)((?:\t.*)?)$', re.MULTILINE)
+        return pattern.sub(fix_header_line, diff)
+
     def _parse_diff(self, diff: str) -> List[str]:
         """
         Parse unified diff and extract affected files
@@ -475,15 +522,20 @@ Focus on the minimal changes needed to resolve the issue."""
             ValueError: If diff format is invalid
         """
         files = []
-        
+
         # Unified diff format: --- a/path/to/file +++ b/path/to/file
-        file_pattern = r'^---\s+a/(.+?)\n\+\+\+\s+b/(.+?)$'
+        # (also accept diffs without the a/ b/ prefix, and trailing tab-separated
+        # timestamps, since not every LLM follows the git convention exactly)
+        file_pattern = r'^---\s+(?:a/)?(.+?)(?:\t.*)?\n\+\+\+\s+(?:b/)?(.+?)(?:\t.*)?$'
         matches = re.findall(file_pattern, diff, re.MULTILINE)
-        
+
         for old_path, new_path in matches:
-            if new_path not in files:
+            new_path = new_path.strip()
+            if new_path in ('/dev/null', ''):
+                new_path = old_path.strip()
+            if new_path and new_path not in files:
                 files.append(new_path)
-        
+
         if not files:
             raise ValueError("No files found in diff")
         
@@ -570,48 +622,77 @@ Focus on the minimal changes needed to resolve the issue."""
         """
         try:
             logger.info(f"Applying patch to {repository_path}...")
-            
+
             # Write patch to temp file
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.patch', delete=False) as f:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.patch', delete=False, newline='\n') as f:
                 f.write(patch_result.diff)
+                if not patch_result.diff.endswith('\n'):
+                    f.write('\n')
                 patch_file = f.name
-            
+
             try:
-                # Dry run first
-                result = subprocess.run(
-                    ['patch', '--dry-run', '-p1', '-i', patch_file],
+                # Prefer `git apply --recount`: LLM-generated diffs frequently have
+                # correct content but slightly-off hunk line counts, which `patch`
+                # rejects outright as "malformed" but `git apply --recount`
+                # tolerates by recalculating the counts itself.
+                git_dry_run = subprocess.run(
+                    ['git', 'apply', '--check', '--recount', '--whitespace=fix', '-p1', patch_file],
                     cwd=repository_path,
                     capture_output=True,
                     text=True,
                     timeout=30
                 )
-                
+
+                if git_dry_run.returncode == 0:
+                    result = subprocess.run(
+                        ['git', 'apply', '--recount', '--whitespace=fix', '-p1', patch_file],
+                        cwd=repository_path,
+                        capture_output=True,
+                        text=True,
+                        timeout=30
+                    )
+                    if result.returncode == 0:
+                        logger.info("✓ Patch applied successfully (git apply)")
+                        return True
+                    logger.error(f"git apply failed after successful dry-run: {result.stderr}")
+                else:
+                    logger.warning(f"git apply --check failed, falling back to patch: {git_dry_run.stderr}")
+
+                # Fallback: classic `patch` utility
+                result = subprocess.run(
+                    ['patch', '--dry-run', '-p1', '--fuzz=3', '-i', patch_file],
+                    cwd=repository_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+
                 if result.returncode != 0:
                     logger.error(f"Patch dry-run failed: {result.stderr}")
                     return False
-                
+
                 logger.info("✓ Patch dry-run successful")
-                
+
                 # Actually apply
                 result = subprocess.run(
-                    ['patch', '-p1', '-i', patch_file],
+                    ['patch', '-p1', '--fuzz=3', '-i', patch_file],
                     cwd=repository_path,
                     capture_output=True,
                     text=True,
                     timeout=30
                 )
-                
+
                 if result.returncode == 0:
-                    logger.info("✓ Patch applied successfully")
+                    logger.info("✓ Patch applied successfully (patch)")
                     return True
                 else:
                     logger.error(f"Patch application failed: {result.stderr}")
                     return False
-            
+
             finally:
                 # Cleanup temp file
                 os.unlink(patch_file)
-        
+
         except Exception as e:
             logger.error(f"✗ Error applying patch: {e}")
             return False

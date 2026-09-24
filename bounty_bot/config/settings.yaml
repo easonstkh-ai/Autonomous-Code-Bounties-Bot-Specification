@@ -1,57 +1,37 @@
-# Bounty Bot Configuration
-# Author: Next Development Agent
-# Last Updated: 2026-08-30
-
-# LLM API Configuration
 llm:
-  provider: "gemini"  # Options: gemini, openai
-  model: "gemini-3.1-pro-preview"
-  # Gemini reads GEMINI_API_KEY; OpenAI reads OPENAI_API_KEY.
-  api_key: "${GEMINI_API_KEY}"
-
-# GitHub Configuration
+  provider: openai
+  model: gpt-4.1-mini
+  api_key: ${OPENAI_API_KEY}
 github:
-  token: "${GITHUB_TOKEN}"
+  token: ${GITHUB_TOKEN}
   cli_available: true
-
-# Algora API Configuration
 algora:
-  enabled: false  # The public bounty endpoint is currently unavailable
-  api_endpoint: "https://api.algora.io/v1/bounties"
-  rate_limit: 60  # requests per minute
-
-# Issue Filtering Rules
+  enabled: false
+  api_endpoint: https://api.algora.io/v1/bounties
+  rate_limit: 60
 filters:
   languages:
-    - Python
-    - TypeScript
-    - JavaScript
-  min_bounty_amount: 50  # USD
-  max_ai_cost_usd: 5  # Skip bounties whose estimated AI cost exceeds this (web UI)
+  - Python
+  - TypeScript
+  - JavaScript
+  min_bounty_amount: 50.0
+  max_ai_cost_usd: 5.0
   exclude_labels:
-    - "Needs Discussion"
-    - "Design Required"
-    - "Question"
-
-# Docker Testing Configuration
+  - Needs Discussion
+  - Design Required
+  - Question
 docker:
-  memory_limit: "4g"
-  cpu_limit: 2
+  memory_limit: 4g
+  cpu_limit: 2.0
   timeout_seconds: 300
-  registry: "localhost"
-
-# Resource Limits
+  registry: localhost
 resources:
   max_parallel_tests: 1
   reserved_ram_gb: 12
   max_retries: 3
-
-# Monitoring
 monitoring:
-  poll_interval_seconds: 300  # 5 minutes
+  poll_interval_seconds: 300
   daemon_mode: false
-  log_level: "INFO"
-
-# Pull Request submission (web UI)
+  log_level: INFO
 submission:
-  auto_submit_pr: true  # If false, the pipeline stops after tests pass instead of opening a PR
+  auto_submit_pr: true

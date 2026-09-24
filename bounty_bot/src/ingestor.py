@@ -19,6 +19,7 @@ import ast
 from typing import List, Dict, Optional, Tuple, Set
 from pathlib import Path
 from datetime import datetime
+from urllib.parse import urlparse
 from dataclasses import dataclass, field, asdict
 from pydantic import BaseModel, Field
 import requests
@@ -122,6 +123,7 @@ class StackTraceExtractor:
             List of StackTrace objects
         """
         stack_traces = []
+        language = (language or "").lower()
         patterns = StackTraceExtractor.PATTERNS.get(language, [])
         
         for pattern in patterns:
@@ -433,13 +435,22 @@ class CodeIngestor:
         Returns:
             Path to cloned repository or None if failed
         """
+        # Only ever hand plain https:// URLs to `git clone`. Git supports
+        # other transports (ext::, fd::, file://, ssh with arbitrary hosts)
+        # that can run arbitrary commands or read local files if a URL from
+        # an untrusted source ever reaches here - bounty repo URLs are
+        # expected to always be GitHub's own https clone_url.
+        if urlparse(repo_url).scheme != "https":
+            logger.error(f"Refusing to clone non-https repository URL: {repo_url}")
+            return None
+
         try:
             # Create unique directory for this clone
             repo_name = repo_url.split('/')[-1].replace('.git', '')
             clone_path = os.path.join(self.cache_dir, f"{repo_name}_{datetime.now().timestamp()}")
-            
+
             logger.info(f"Shallow cloning {repo_url} to {clone_path}")
-            
+
             # Use shallow clone (--depth=1) to minimize bandwidth and time
             repo = Repo.clone_from(
                 repo_url,
@@ -495,7 +506,7 @@ class CodeIngestor:
             'typescript': '.ts',
             'java': '.java',
         }
-        ext = ext_map.get(language, '')
+        ext = ext_map.get((language or '').lower(), '')
         
         if ext:
             for root, dirs, files in os.walk(repo_path):
