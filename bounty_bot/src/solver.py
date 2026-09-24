@@ -116,17 +116,22 @@ class LLMSolver:
 
         # Choose the provider in a robust order:
         # 1) explicit constructor override
-        # 2) environment keys that are actually present
-        # 3) YAML config
+        # 2) YAML config (what the web UI's Settings page actually writes)
+        # 3) environment keys that are actually present, as a last-resort
+        #    guess when nothing above says anything
         # 4) sensible default
-        env_provider = None
-        if os.getenv("OPENAI_API_KEY"):
-            env_provider = "openai"
-        elif os.getenv("GEMINI_API_KEY"):
-            env_provider = "gemini"
-
-        configured_provider = self.config.provider or llm_settings.get("provider") or "gemini"
-        self.provider = (env_provider or configured_provider).lower()
+        # Env-var presence used to be checked BEFORE the YAML config, which
+        # meant picking "gemini" in the Settings page silently did nothing
+        # as long as OPENAI_API_KEY also happened to still be set in .env.
+        configured_provider = self.config.provider or llm_settings.get("provider")
+        if not configured_provider:
+            if os.getenv("OPENAI_API_KEY"):
+                configured_provider = "openai"
+            elif os.getenv("GEMINI_API_KEY"):
+                configured_provider = "gemini"
+            else:
+                configured_provider = "gemini"
+        self.provider = configured_provider.lower()
         if self.provider not in {"gemini", "openai"}:
             raise ValueError(f"Unsupported LLM provider: {self.provider}")
 

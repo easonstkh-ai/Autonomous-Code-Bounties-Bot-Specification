@@ -372,11 +372,18 @@ class CodeIngestor:
             language=language
         )
         
-        # Step 2: Shallow clone repository
+        # Step 2: Shallow clone repository (always clones the repo's actual
+        # default branch - see _clone_repository - so re-derive the real
+        # branch name rather than trusting the caller-supplied guess).
         repo_path = self._clone_repository(repository_url, branch)
         if not repo_path:
             logger.error(f"Failed to clone repository {repository_url}")
             return None
+
+        try:
+            branch = Repo(repo_path).active_branch.name
+        except Exception:
+            pass  # keep the caller-supplied guess (e.g. detached HEAD)
         
         # Step 3: Find related files based on stack traces
         related_files = self._find_related_files(
@@ -427,11 +434,14 @@ class CodeIngestor:
     def _clone_repository(self, repo_url: str, branch: str = "main") -> Optional[str]:
         """
         Shallow clone repository
-        
+
         Args:
             repo_url: Git repository URL
-            branch: Branch to clone
-        
+            branch: Unused for the clone itself (kept for signature/API
+                compatibility) - always clones the repo's actual default
+                branch instead of guessing "main"/"master", since plenty of
+                real repos use neither.
+
         Returns:
             Path to cloned repository or None if failed
         """
@@ -451,23 +461,23 @@ class CodeIngestor:
 
             logger.info(f"Shallow cloning {repo_url} to {clone_path}")
 
-            # Use shallow clone (--depth=1) to minimize bandwidth and time
+            # Use shallow clone (--depth=1) to minimize bandwidth and time.
+            # Deliberately not passing branch=... : that forces git to
+            # resolve a specific ref instead of following the remote's
+            # actual default, which fails outright for any repo whose
+            # default branch isn't "main"/"master".
             repo = Repo.clone_from(
                 repo_url,
                 clone_path,
                 depth=1,
-                branch=branch,
                 no_checkout=False
             )
-            
+
             logger.info(f"✓ Successfully cloned repository to {clone_path}")
             return clone_path
-        
+
         except GitCommandError as e:
             logger.error(f"Git clone failed for {repo_url}: {e}")
-            # Try alternative branch if main fails
-            if branch != "master":
-                return self._clone_repository(repo_url, "master")
             return None
         except Exception as e:
             logger.error(f"Failed to clone repository {repo_url}: {e}")
