@@ -496,7 +496,10 @@ class CodeIngestor:
             'typescript': ('.ts', '.tsx'),
             'java': ('.java',),
         }
-        extensions_for_language = extensions.get(normalized_language, ())
+        extensions_for_language = extensions.get(
+            normalized_language,
+            ('.py', '.js', '.jsx', '.ts', '.tsx', '.java', '.go', '.rs', '.rb', '.php', '.c', '.cpp', '.h', '.cs'),
+        )
         
         if extensions_for_language:
             for root, dirs, files in os.walk(repo_path):
