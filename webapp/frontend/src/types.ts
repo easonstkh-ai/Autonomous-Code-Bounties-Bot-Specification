@@ -3,7 +3,7 @@
 
 export type AgentState = "RUNNING" | "STOPPED";
 
-export type AiProvider = "gemini" | "openai" | "claude";
+export type AiProvider = "gemini" | "openai" | "local" | "claude";
 
 export interface DashboardStats {
   bountiesFound: number;

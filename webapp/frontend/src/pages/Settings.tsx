@@ -9,6 +9,7 @@ import type { AiProvider } from "../types";
 const PROVIDERS: { id: AiProvider; label: string; available: boolean }[] = [
   { id: "gemini", label: "Gemini", available: true },
   { id: "openai", label: "OpenAI", available: true },
+  { id: "local", label: "本地 Ollama", available: true },
   { id: "claude", label: "Claude", available: false },
 ];
 
@@ -153,15 +154,19 @@ export function Settings() {
             </button>
           ))}
         </div>
-        <Field label={settings.apiKeySet ? "API 金鑰（已設定，輸入新值以更新）" : "API 金鑰"}>
-          <input
-            type="password"
-            value={newApiKey}
-            onChange={(e) => setNewApiKey(e.target.value)}
-            placeholder={settings.apiKeySet ? "••••••••" : "sk-..."}
-            className={inputClass}
-          />
-        </Field>
+        {form.aiProvider === "local" ? (
+          <p className="text-sm text-muted">本地 Ollama 不需要 API 金鑰，預設連線至 http://127.0.0.1:11434。</p>
+        ) : (
+          <Field label={settings.apiKeySet ? "API 金鑰（已設定，輸入新值以更新）" : "API 金鑰"}>
+            <input
+              type="password"
+              value={newApiKey}
+              onChange={(e) => setNewApiKey(e.target.value)}
+              placeholder={settings.apiKeySet ? "••••••••" : "sk-..."}
+              className={inputClass}
+            />
+          </Field>
+        )}
       </Section>
 
       <Section title="倉庫篩選條件">

@@ -1,6 +1,8 @@
 llm:
   provider: gemini
   model: gemini-3.6-flash
+  local_model: qwen2.5-coder:7b
+  local_base_url: http://127.0.0.1:11434/v1
   api_key: ${GEMINI_API_KEY}
 github:
   token: ${GITHUB_TOKEN}

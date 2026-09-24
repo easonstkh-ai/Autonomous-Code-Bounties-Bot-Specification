@@ -82,7 +82,7 @@ def get_settings_snapshot() -> dict:
     submission = yaml_data.get("submission", {})
 
     provider = (llm.get("provider") or "gemini").lower()
-    api_key_set = bool(env.get("OPENAI_API_KEY")) if provider == "openai" else bool(env.get("GEMINI_API_KEY"))
+    api_key_set = True if provider == "local" else bool(env.get("OPENAI_API_KEY")) if provider == "openai" else bool(env.get("GEMINI_API_KEY"))
 
     return {
         "github_connected": bool(env.get("GITHUB_TOKEN")) and bool(env.get("GITHUB_USERNAME")),
@@ -117,8 +117,9 @@ def apply_settings_patch(patch: dict) -> None:
 
     if patch.get("api_key"):
         provider = (patch.get("ai_provider") or yaml_data["llm"].get("provider") or "gemini").lower()
-        env_key = "OPENAI_API_KEY" if provider == "openai" else "GEMINI_API_KEY"
-        write_env_values({env_key: patch["api_key"]})
+        if provider != "local":
+            env_key = "OPENAI_API_KEY" if provider == "openai" else "GEMINI_API_KEY"
+            write_env_values({env_key: patch["api_key"]})
 
     if patch.get("languages") is not None:
         yaml_data["filters"]["languages"] = patch["languages"]

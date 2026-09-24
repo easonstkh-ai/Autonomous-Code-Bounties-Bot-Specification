@@ -91,6 +91,7 @@ class SolverConfig(BaseModel):
     temperature: float = 0.7
     max_tokens: int = 4096
     timeout_seconds: int = 600
+    base_url: Optional[str] = None
 
 
 class LLMSolver:
@@ -119,22 +120,19 @@ class LLMSolver:
         # 2) environment keys that are actually present
         # 3) YAML config
         # 4) sensible default
-        env_provider = None
-        if os.getenv("OPENAI_API_KEY"):
-            env_provider = "openai"
-        elif os.getenv("GEMINI_API_KEY"):
-            env_provider = "gemini"
-
-        configured_provider = self.config.provider or llm_settings.get("provider") or "gemini"
-        self.provider = (env_provider or configured_provider).lower()
-        if self.provider not in {"gemini", "openai"}:
+        configured_provider = self.config.provider or llm_settings.get("provider")
+        env_provider = "openai" if os.getenv("OPENAI_API_KEY") else "gemini" if os.getenv("GEMINI_API_KEY") else None
+        self.provider = (configured_provider or env_provider or "gemini").lower()
+        if self.provider not in {"gemini", "openai", "local"}:
             raise ValueError(f"Unsupported LLM provider: {self.provider}")
 
-        self.config.model = self.config.model or llm_settings.get("model")
+        configured_model = llm_settings.get("local_model") if self.provider == "local" else llm_settings.get("model")
+        self.config.model = self.config.model or configured_model
         if not self.config.model:
             self.config.model = {
                 "gemini": "gemini-3.6-flash",
                 "openai": "gpt-4.1-mini",
+                "local": "qwen2.5-coder:7b",
             }[self.provider]
 
         if self.provider == "gemini":
@@ -159,14 +157,15 @@ class LLMSolver:
                     genai.configure(api_key=api_key)
                     self.model = genai.GenerativeModel(self.config.model)
         else:
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
+            api_key = os.getenv("OPENAI_API_KEY") if self.provider == "openai" else os.getenv("LOCAL_LLM_API_KEY", "ollama")
+            if self.provider == "openai" and not api_key:
                 raise ValueError("OPENAI_API_KEY is required when llm.provider is openai")
             try:
                 from openai import OpenAI
             except ImportError as exc:
                 raise ValueError("The openai package is required for llm.provider=openai") from exc
-            self.model = OpenAI(api_key=api_key, timeout=self.config.timeout_seconds)
+            base_url = self.config.base_url or llm_settings.get("local_base_url") if self.provider == "local" else None
+            self.model = OpenAI(api_key=api_key, base_url=base_url, timeout=self.config.timeout_seconds)
 
         logger.info(
             f"LLMSolver initialized (ID: {self.solver_id}, "
