@@ -489,15 +489,16 @@ class CodeIngestor:
                 logger.debug(f"Found stack trace file: {trace.file_path}")
         
         # Search for files with language extension
-        ext_map = {
-            'python': '.py',
-            'javascript': '.js',
-            'typescript': '.ts',
-            'java': '.java',
+        normalized_language = language.strip().lower()
+        extensions = {
+            'python': ('.py',),
+            'javascript': ('.js', '.jsx'),
+            'typescript': ('.ts', '.tsx'),
+            'java': ('.java',),
         }
-        ext = ext_map.get(language, '')
+        extensions_for_language = extensions.get(normalized_language, ())
         
-        if ext:
+        if extensions_for_language:
             for root, dirs, files in os.walk(repo_path):
                 # Skip common non-code directories
                 dirs[:] = [d for d in dirs if d not in [
@@ -506,7 +507,7 @@ class CodeIngestor:
                 ]]
                 
                 for file in files:
-                    if file.endswith(ext) and len(related_files) < 20:
+                    if any(file.endswith(extension) for extension in extensions_for_language) and len(related_files) < 20:
                         rel_path = os.path.relpath(os.path.join(root, file), repo_path)
                         related_files.add(rel_path)
         

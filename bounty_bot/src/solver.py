@@ -133,7 +133,7 @@ class LLMSolver:
         self.config.model = self.config.model or llm_settings.get("model")
         if not self.config.model:
             self.config.model = {
-                "gemini": "gemini-3.1-pro-preview",
+                "gemini": "gemini-3.6-flash",
                 "openai": "gpt-4.1-mini",
             }[self.provider]
 
@@ -407,39 +407,47 @@ Focus on the minimal changes needed to resolve the issue."""
     
     def _extract_diff_from_response(self, response: str) -> str:
         """Extract unified diff from LLM response"""
-        # Find the first occurrence of --- (diff start marker)
-        start = response.find('--- ')
-        if start == -1:
-            start = response.find('---')
-            if start == -1:
-                raise ValueError("No unified diff found in API response")
-        
-        # Extract from --- onwards
-        rest = response[start:]
-        lines = rest.split('\n')
-        
-        diff_lines = []
-        in_diff = False
-        
-        for line in lines:
-            # Unified diff lines start with ---, +++, @@, +, -, or space
-            if line.startswith(('--- ', '+++ ', '@@', '-', '+', ' ')):
-                in_diff = True
-                diff_lines.append(line)
-            elif in_diff:
-                # Stop when we hit a line that doesn't look like diff
-                if line.strip() and not line.startswith(('--- ', '+++ ', '@@', '-', '+', ' ', '\\')):
-                    break
-                elif line.strip() == '':
-                    # Keep empty lines within diff
-                    diff_lines.append(line)
-                else:
-                    diff_lines.append(line)
-        
-        if not diff_lines:
+        lines = response.replace("\r\n", "\n").split("\n")
+        start = next(
+            (
+                index
+                for index, line in enumerate(lines)
+                if line.startswith("diff --git ") or line.startswith("--- a/")
+            ),
+            None,
+        )
+        if start is None:
             raise ValueError("No unified diff found in API response")
-        
-        diff = '\n'.join(diff_lines).strip()
+
+        diff_lines = []
+        diff_prefixes = (
+            "diff --git ",
+            "index ",
+            "new file mode ",
+            "deleted file mode ",
+            "old mode ",
+            "new mode ",
+            "similarity index ",
+            "rename from ",
+            "rename to ",
+            "--- ",
+            "+++ ",
+            "@@",
+            "+",
+            "-",
+            " ",
+            "\\ No newline",
+        )
+        for line in lines[start:]:
+            if line.strip().startswith("```"):
+                break
+            if line.strip() and not line.startswith(diff_prefixes):
+                break
+            diff_lines.append(line)
+
+        diff = "\n".join(diff_lines).strip()
+        if not diff or "--- " not in diff or "+++ " not in diff:
+            raise ValueError("No unified diff found in API response")
         return diff
     
     def _extract_summary_from_response(self, response: str) -> str:
@@ -577,9 +585,9 @@ Focus on the minimal changes needed to resolve the issue."""
                 patch_file = f.name
             
             try:
-                # Dry run first
+                # Validate the patch before changing the working tree.
                 result = subprocess.run(
-                    ['patch', '--dry-run', '-p1', '-i', patch_file],
+                    ['git', 'apply', '--recount', '--check', patch_file],
                     cwd=repository_path,
                     capture_output=True,
                     text=True,
@@ -587,14 +595,14 @@ Focus on the minimal changes needed to resolve the issue."""
                 )
                 
                 if result.returncode != 0:
-                    logger.error(f"Patch dry-run failed: {result.stderr}")
+                    logger.error(f"Patch check failed: {result.stderr or result.stdout}")
                     return False
                 
-                logger.info("✓ Patch dry-run successful")
+                logger.info("✓ Patch check successful")
                 
                 # Actually apply
                 result = subprocess.run(
-                    ['patch', '-p1', '-i', patch_file],
+                    ['git', 'apply', '--recount', patch_file],
                     cwd=repository_path,
                     capture_output=True,
                     text=True,
@@ -605,7 +613,7 @@ Focus on the minimal changes needed to resolve the issue."""
                     logger.info("✓ Patch applied successfully")
                     return True
                 else:
-                    logger.error(f"Patch application failed: {result.stderr}")
+                    logger.error(f"Patch application failed: {result.stderr or result.stdout}")
                     return False
             
             finally:
