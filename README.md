@@ -108,6 +108,38 @@ bounty_bot/
 └── requirements.txt            # Python 依賴
 ```
 
+## 🖥️ Web UI（Beta）
+
+`webapp/` 提供一個給一般使用者用的網頁介面（Dashboard／Bounties／Runs／Settings），後端是包住 `bounty_bot` 現有模組的 FastAPI，不會更動 CLI 本身。前端會被打包成靜態檔案，由同一個 FastAPI 一起提供，所以整個網頁介面只需要「一個伺服器、一個網址」。
+
+### 一般使用者：雙擊啟動
+
+雙擊專案根目錄的 [start.bat](start.bat)，它會自動：
+1. 沒有 `.env` 就從 `.env.example` 建立一份
+2. 啟動伺服器（另開一個「Bounty Bot Server」視窗，關掉它就是停止伺服器）
+3. 自動開啟瀏覽器到 http://localhost:8000
+
+打開後照畫面指示：Connect GitHub → 選擇 AI 供應商 → 貼上 API 金鑰 → Start Agent 即可。第一次輸入的 GitHub Token 與 API 金鑰會寫入專案根目錄的 `.env`，和 CLI 共用同一份設定。
+
+想要一個帶圖示的桌面捷徑，可以自行建立一個指向 `start.bat`、圖示設為 [bounty_bot.ico](bounty_bot.ico) 的 Windows 捷徑（捷徑本身含機器專屬路徑，不適合放進版本控制，所以沒有直接附在 repo 裡）。
+
+> 前提：本機已安裝 Python 並執行過 `pip install -r requirements.txt`；`start.bat` 需要 `webapp/frontend/dist` 已經 build 好（見下方開發者流程）。
+
+### 開發者：修改前端後重新 build
+
+```bash
+cd webapp/frontend
+npm install
+npm run build      # 產生 webapp/frontend/dist，start.bat 會用到這份靜態檔案
+
+cd ../..
+uvicorn webapp.backend.app:app --port 8000   # 直接開單一伺服器測試
+```
+
+若要一邊改前端一邊即時預覽（Hot Reload），改用兩個終端機：後端 `uvicorn webapp.backend.app:app --reload --port 8000`，前端 `cd webapp/frontend && npm run dev`，打開 http://localhost:5173（它的 Vite dev server 會把 `/api` 轉發到 8000）。
+
+⚠️ Bounties 頁面需要 Agent 啟動且 `GITHUB_TOKEN` 有效才會有資料；Runs 的測試階段需要本機 Docker 已啟動；PR 提交會是真實的 GitHub 操作，請先在「設定 → 自動化」關閉「測試通過後自動提交 PR」進行驗證，確認無誤後再開啟。
+
 ## 🎯 當前狀態
 
 - **Phase 1 ✅** - 項目基礎設施已建立
