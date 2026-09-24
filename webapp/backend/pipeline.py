@@ -85,7 +85,11 @@ def _run(run_id, bounty, run_store, log, fail) -> None:
         return
 
     if not applied:
-        fail("generating_patch", "修補程式無法套用到倉庫")
+        detail = getattr(solver, "last_apply_error", "").strip()
+        message = "修補程式無法套用到倉庫"
+        if detail:
+            message = f"{message}：{detail}"
+        fail("generating_patch", message)
         return
 
     run_store.update_stage(run_id, "generating_patch", "done")

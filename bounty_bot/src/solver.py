@@ -16,6 +16,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import shutil
+import textwrap
 
 from pydantic import BaseModel, Field
 import yaml
@@ -110,6 +111,7 @@ class LLMSolver:
         """Initialize LLMSolver with configuration"""
         self.config = config or SolverConfig()
         self.solver_id = self._generate_solver_id()
+        self.last_apply_error = ""
         
         # Load settings from YAML
         self.settings = self._load_settings()
@@ -412,7 +414,9 @@ an explanation or a Markdown document outside the diff."""
     
     def _extract_diff_from_response(self, response: str) -> str:
         """Extract unified diff from LLM response"""
-        lines = response.replace("\r\n", "\n").split("\n")
+        # Models often indent a fenced diff as part of a Markdown list or quote.
+        # Remove that common indentation while preserving diff content spacing.
+        lines = textwrap.dedent(response.replace("\r\n", "\n")).split("\n")
         start = next(
             (
                 index
@@ -617,9 +621,10 @@ an explanation or a Markdown document outside the diff."""
                         timeout=30,
                     )
                     if recovery.returncode != 0:
+                        self.last_apply_error = recovery.stderr or recovery.stdout or result.stderr or result.stdout
                         logger.error(
                             f"Patch check failed: {result.stderr or result.stdout}; "
-                            f"three-way check failed: {recovery.stderr or recovery.stdout}"
+                            f"three-way check failed: {self.last_apply_error}"
                         )
                         return False
                     apply_command = [
@@ -645,6 +650,7 @@ an explanation or a Markdown document outside the diff."""
                     return True
                 else:
                     logger.error(f"Patch application failed: {result.stderr or result.stdout}")
+                    self.last_apply_error = result.stderr or result.stdout
                     return False
             
             finally:
@@ -652,6 +658,7 @@ an explanation or a Markdown document outside the diff."""
                 os.unlink(patch_file)
         
         except Exception as e:
+            self.last_apply_error = str(e)
             logger.error(f"✗ Error applying patch: {e}")
             return False
     
