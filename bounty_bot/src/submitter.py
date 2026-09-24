@@ -332,7 +332,7 @@ class AutoSubmitter:
             
             # Apply patch using git apply
             result = subprocess.run(
-                ["git", "apply", str(patch_file)],
+                ["git", "apply", "--recount", str(patch_file)],
                 cwd=repo.working_dir,
                 capture_output=True,
                 text=True,
@@ -340,7 +340,21 @@ class AutoSubmitter:
             )
             
             if result.returncode != 0:
-                raise RuntimeError(f"Patch application failed: {result.stderr}")
+                recovery = subprocess.run(
+                    [
+                        "git", "apply", "--3way", "--recount",
+                        "--ignore-whitespace", str(patch_file),
+                    ],
+                    cwd=repo.working_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if recovery.returncode != 0:
+                    raise RuntimeError(
+                        f"Patch application failed: {result.stderr or result.stdout}; "
+                        f"three-way fallback failed: {recovery.stderr or recovery.stdout}"
+                    )
             
             logger.info(f"✓ Patch applied successfully")
         finally:

@@ -272,6 +272,9 @@ Requirements:
 4. Avoid unnecessary formatting changes or refactoring
 5. Ensure the fix addresses the fundamental issue, not just symptoms
 6. Include a brief explanation of the fix before the diff
+7. If no related source files are found, inspect the issue and repository context
+    and create or update the smallest appropriate documentation/configuration file.
+    A new file must use the standard git form: --- /dev/null followed by +++ b/path.
 
 Output format:
 ---
@@ -331,7 +334,10 @@ Context Summary:
 
 Task: Generate a unified diff format patch to fix this issue.
 The patch should be directly applicable to the repository's {code_context.repository_branch} branch.
-Focus on the minimal changes needed to resolve the issue."""
+Focus on the minimal changes needed to resolve the issue.
+Even when Related Files is N/A, you must return an applicable unified diff if the
+issue can be resolved by adding or updating a repository file. Do not return only
+an explanation or a Markdown document outside the diff."""
         
         return prompt
     
@@ -411,7 +417,9 @@ Focus on the minimal changes needed to resolve the issue."""
             (
                 index
                 for index, line in enumerate(lines)
-                if line.startswith("diff --git ") or line.startswith("--- a/")
+                if line.startswith("diff --git ")
+                or line.startswith("--- a/")
+                or line.startswith("--- /dev/null")
             ),
             None,
         )
@@ -483,8 +491,8 @@ Focus on the minimal changes needed to resolve the issue."""
         """
         files = []
         
-        # Unified diff format: --- a/path/to/file +++ b/path/to/file
-        file_pattern = r'^---\s+a/(.+?)\n\+\+\+\s+b/(.+?)$'
+        # Support modified files and git's new-file form (--- /dev/null).
+        file_pattern = r'^---\s+(?:a/(.+?)|/dev/null)\n\+\+\+\s+b/(.+?)$'
         matches = re.findall(file_pattern, diff, re.MULTILINE)
         
         for old_path, new_path in matches:
@@ -585,8 +593,9 @@ Focus on the minimal changes needed to resolve the issue."""
             
             try:
                 # Validate the patch before changing the working tree.
+                check_command = ['git', 'apply', '--recount', '--check', patch_file]
                 result = subprocess.run(
-                    ['git', 'apply', '--recount', '--check', patch_file],
+                    check_command,
                     cwd=repository_path,
                     capture_output=True,
                     text=True,
@@ -594,14 +603,37 @@ Focus on the minimal changes needed to resolve the issue."""
                 )
                 
                 if result.returncode != 0:
-                    logger.error(f"Patch check failed: {result.stderr or result.stdout}")
-                    return False
+                    # Generated patches can have small context or whitespace
+                    # drift; validate a three-way fallback before applying it.
+                    recovery_command = [
+                        'git', 'apply', '--3way', '--recount',
+                        '--ignore-whitespace', '--check', patch_file,
+                    ]
+                    recovery = subprocess.run(
+                        recovery_command,
+                        cwd=repository_path,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    if recovery.returncode != 0:
+                        logger.error(
+                            f"Patch check failed: {result.stderr or result.stdout}; "
+                            f"three-way check failed: {recovery.stderr or recovery.stdout}"
+                        )
+                        return False
+                    apply_command = [
+                        'git', 'apply', '--3way', '--recount',
+                        '--ignore-whitespace', patch_file,
+                    ]
+                else:
+                    apply_command = ['git', 'apply', '--recount', patch_file]
                 
                 logger.info("✓ Patch check successful")
                 
                 # Actually apply
                 result = subprocess.run(
-                    ['git', 'apply', '--recount', patch_file],
+                    apply_command,
                     cwd=repository_path,
                     capture_output=True,
                     text=True,
