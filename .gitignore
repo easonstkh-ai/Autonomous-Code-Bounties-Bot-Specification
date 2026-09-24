@@ -9,9 +9,9 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/
+/build/
 develop-eggs/
-dist/
+/dist/
 downloads/
 eggs/
 .eggs/
@@ -53,3 +53,6 @@ logs/
 
 # Docker
 .dockerignore
+
+# Windows shortcuts (machine-specific absolute paths, not portable)
+*.lnk

@@ -1,13 +1,15 @@
-requests==2.31.0
+requests>=2.32.0
 pyyaml==6.0.1
 pydantic>=2.10.6
 protobuf>=5.29.0
 google-generativeai>=0.8.0
 openai>=1.0.0
-GitPython==3.1.40
+GitPython>=3.1.41
 python-dotenv>=1.0.0
-pytest==7.4.3
+pytest>=9.0.3
 docker==7.0.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
 # Optional: tree-sitter packages (for advanced code parsing in Phase 3+)
 # tree-sitter>=0.20.2
 # tree-sitter-python>=0.23.0
