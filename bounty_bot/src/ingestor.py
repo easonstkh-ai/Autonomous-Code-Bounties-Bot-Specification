@@ -107,6 +107,9 @@ class StackTraceExtractor:
             r'at\s+(\w+)\s+\(([^:]+):(\d+):(\d+)\)',
             r'at\s+([^:]+):(\d+):(\d+)',
         ],
+        'rust': [
+            r'(?:at\s+)?([^\s():]+\.rs):(\d+)(?::\d+)?',
+        ],
     }
 
     @staticmethod
@@ -122,6 +125,7 @@ class StackTraceExtractor:
             List of StackTrace objects
         """
         stack_traces = []
+        language = (language or "").strip().lower()
         patterns = StackTraceExtractor.PATTERNS.get(language, [])
         
         for pattern in patterns:
@@ -147,6 +151,13 @@ class StackTraceExtractor:
                             code_line=""
                         )
                         stack_traces.append(stack_trace)
+                    elif language == 'rust' and len(groups) >= 2:
+                        stack_traces.append(StackTrace(
+                            file_path=groups[0],
+                            function_name="<unknown>",
+                            line_number=int(groups[1]),
+                            code_line=""
+                        ))
                 except (ValueError, IndexError) as e:
                     logger.debug(f"Failed to parse stack trace: {e}")
                     continue
@@ -380,7 +391,9 @@ class CodeIngestor:
         related_files = self._find_related_files(
             repo_path,
             stack_traces,
-            language
+            language,
+            issue_title,
+            issue_description
         )
 
         # Step 4: Extract code snippets
@@ -466,7 +479,9 @@ class CodeIngestor:
         self,
         repo_path: str,
         stack_traces: List[StackTrace],
-        language: str
+        language: str,
+        issue_title: str = "",
+        issue_description: str = ""
     ) -> List[str]:
         """
         Find files related to the issue
@@ -500,6 +515,18 @@ class CodeIngestor:
             normalized_language,
             ('.py', '.js', '.jsx', '.ts', '.tsx', '.java', '.go', '.rs', '.rb', '.php', '.c', '.cpp', '.h', '.cs'),
         )
+
+        issue_text = f"{issue_title} {issue_description}".lower()
+        documentation_issue = any(keyword in issue_text for keyword in (
+            'changelog', 'documentation', 'document', 'readme',
+            'report', 'inbox', 'process', 'guide', 'skill',
+        ))
+        documentation_extensions = ('.md', '.markdown', '.rst', '.adoc', '.txt')
+        configuration_extensions = ('.yaml', '.yml', '.toml', '.json')
+        preferred_names = {
+            'readme', 'changelog', 'contributing', 'code_of_conduct',
+            'dockerfile', 'pyproject.toml', 'package.json', 'cargo.toml',
+        }
         
         if extensions_for_language:
             for root, dirs, files in os.walk(repo_path):
@@ -511,6 +538,22 @@ class CodeIngestor:
                 
                 for file in files:
                     if any(file.endswith(extension) for extension in extensions_for_language) and len(related_files) < 20:
+                        rel_path = os.path.relpath(os.path.join(root, file), repo_path)
+                        related_files.add(rel_path)
+
+        if documentation_issue:
+            for root, dirs, files in os.walk(repo_path):
+                dirs[:] = [d for d in dirs if d not in [
+                    '.git', '__pycache__', 'node_modules', '.venv',
+                    'venv', 'dist', 'build', '.pytest_cache'
+                ]]
+                for file in files:
+                    normalized_name = file.lower()
+                    if (
+                        normalized_name in preferred_names
+                        or normalized_name.endswith(documentation_extensions)
+                        or normalized_name.endswith(configuration_extensions)
+                    ) and len(related_files) < 20:
                         rel_path = os.path.relpath(os.path.join(root, file), repo_path)
                         related_files.add(rel_path)
         
