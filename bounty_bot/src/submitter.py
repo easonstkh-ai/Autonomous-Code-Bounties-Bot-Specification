@@ -18,6 +18,7 @@ import os
 import json
 import logging
 import re
+import stat
 import subprocess
 import time
 from datetime import datetime
@@ -28,6 +29,14 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, Field
 from git import Repo, GitCommandError
 import requests
+
+
+def _rmtree_clearing_readonly(func, path, exc_info) -> None:
+    """shutil.rmtree onerror hook: git leaves pack/idx files read-only, which
+    makes plain rmtree() raise PermissionError ([WinError 5] Access is
+    denied) on Windows - clear the flag and retry once."""
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -359,7 +368,7 @@ class AutoSubmitter:
         # Clean up existing directory
         if repo_dir.exists():
             import shutil
-            shutil.rmtree(repo_dir)
+            shutil.rmtree(repo_dir, onerror=_rmtree_clearing_readonly)
             logger.info(f"Cleaned up existing directory: {repo_dir}")
         
         repo_dir.parent.mkdir(parents=True, exist_ok=True)
