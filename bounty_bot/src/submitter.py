@@ -436,6 +436,15 @@ class AutoSubmitter:
         patch_file = Path(repo.working_dir) / ".bounty_patch.diff"
         
         try:
+            # LLMSolver._extract_diff_from_response() .strip()s the diff text,
+            # which always removes any trailing newline - without one, the
+            # classic `patch` tool (and sometimes git apply) rejects the last
+            # hunk with "unexpected end of file in patch", even though the
+            # exact same diff already applied cleanly in LLMSolver's own
+            # apply_patch_to_repo(), which re-adds it before writing.
+            if not patch_content.endswith('\n'):
+                patch_content += '\n'
+
             # newline="" is required on Windows: Path.write_text() otherwise
             # translates every "\n" to "\r\n", corrupting the diff's own line
             # endings so git apply/patch fail to match hunk context lines.
