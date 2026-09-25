@@ -75,7 +75,11 @@ class CodeContext(BaseModel):
     
     # Relevant file paths for issue
     related_files: List[str] = Field(default_factory=list)
-    
+
+    # Sample of the repository's file tree, for context on structure/naming
+    # conventions when the issue calls for a new file rather than an edit.
+    repository_file_list: List[str] = Field(default_factory=list)
+
     # Summary of context
     summary: str = ""
     
@@ -391,6 +395,7 @@ class CodeIngestor:
             stack_traces,
             language
         )
+        repository_file_list = self._list_repository_files(repo_path)
 
         # Step 4: Extract code snippets
         code_snippets = self._extract_code_snippets(
@@ -421,6 +426,7 @@ class CodeIngestor:
             stack_traces=stack_traces,
             code_snippets=code_snippets,
             related_files=related_files,
+            repository_file_list=repository_file_list,
             summary=summary,
             repository_branch=branch,
             clone_size_mb=repo_size_mb
@@ -483,6 +489,40 @@ class CodeIngestor:
             logger.error(f"Failed to clone repository {repo_url}: {e}")
             return None
 
+    # Maps a GitHub repo's primary "language" (as reported by the GitHub API)
+    # to the source extensions worth scanning for it. Kept broad since a
+    # narrow map means any repo whose primary language isn't listed here
+    # silently yields zero related files, even though the repo is full of
+    # relevant code.
+    LANGUAGE_EXTENSIONS = {
+        'python': ['.py'],
+        'javascript': ['.js', '.jsx', '.mjs', '.cjs'],
+        'typescript': ['.ts', '.tsx'],
+        'java': ['.java'],
+        'go': ['.go'],
+        'rust': ['.rs'],
+        'c': ['.c', '.h'],
+        'c++': ['.cpp', '.cc', '.cxx', '.hpp', '.hh'],
+        'c#': ['.cs'],
+        'ruby': ['.rb'],
+        'php': ['.php'],
+        'swift': ['.swift'],
+        'kotlin': ['.kt', '.kts'],
+        'scala': ['.scala'],
+        'shell': ['.sh', '.bash'],
+        'markdown': ['.md', '.mdx'],
+        'html': ['.html', '.htm'],
+        'css': ['.css', '.scss'],
+    }
+
+    # Used when the repo's language is unmapped (e.g. "Markdown"/"Unknown"
+    # for doc- or skill-only repos) or yields nothing, so those repos still
+    # get a usable file list instead of an empty one.
+    FALLBACK_EXTENSIONS = sorted(
+        {ext for exts in LANGUAGE_EXTENSIONS.values() for ext in exts}
+        | {'.json', '.yaml', '.yml', '.txt'}
+    )
+
     def _find_related_files(
         self,
         repo_path: str,
@@ -491,48 +531,75 @@ class CodeIngestor:
     ) -> List[str]:
         """
         Find files related to the issue
-        
+
         Args:
             repo_path: Path to cloned repository
             stack_traces: Stack traces extracted from issue
             language: Programming language
-        
+
         Returns:
             List of related file paths (relative to repo)
         """
         related_files = set()
-        
+
         # Add files from stack traces
         for trace in stack_traces:
             file_path = os.path.join(repo_path, trace.file_path.lstrip('/'))
             if os.path.exists(file_path):
                 related_files.add(trace.file_path)
                 logger.debug(f"Found stack trace file: {trace.file_path}")
-        
-        # Search for files with language extension
-        ext_map = {
-            'python': '.py',
-            'javascript': '.js',
-            'typescript': '.ts',
-            'java': '.java',
-        }
-        ext = ext_map.get((language or '').lower(), '')
-        
-        if ext:
-            for root, dirs, files in os.walk(repo_path):
-                # Skip common non-code directories
-                dirs[:] = [d for d in dirs if d not in [
-                    '.git', '__pycache__', 'node_modules', '.venv',
-                    'venv', 'dist', 'build', '.pytest_cache'
-                ]]
-                
-                for file in files:
-                    if file.endswith(ext) and len(related_files) < 20:
-                        rel_path = os.path.relpath(os.path.join(root, file), repo_path)
-                        related_files.add(rel_path)
-        
+
+        # Search for files matching the repo's language extension(s). If the
+        # language is unmapped, or the language-specific scan comes up
+        # empty, fall back to a broad extension set instead of giving up
+        # (e.g. a skills/doc repo whose GitHub "language" is Markdown).
+        extensions = self.LANGUAGE_EXTENSIONS.get((language or '').lower(), [])
+        found_by_extension = self._scan_files_by_extension(repo_path, extensions) if extensions else set()
+
+        if not found_by_extension:
+            found_by_extension = self._scan_files_by_extension(repo_path, self.FALLBACK_EXTENSIONS)
+
+        related_files |= found_by_extension
+
         logger.info(f"Found {len(related_files)} related files")
-        return list(related_files)
+        return list(related_files)[:20]
+
+    def _scan_files_by_extension(self, repo_path: str, extensions: List[str], limit: int = 20) -> Set[str]:
+        """Walk the repo and collect (up to `limit`) file paths matching any of `extensions`."""
+        found: Set[str] = set()
+        for root, dirs, files in os.walk(repo_path):
+            # Skip common non-code directories
+            dirs[:] = [d for d in dirs if d not in [
+                '.git', '__pycache__', 'node_modules', '.venv',
+                'venv', 'dist', 'build', '.pytest_cache'
+            ]]
+
+            for file in files:
+                if len(found) >= limit:
+                    return found
+                if any(file.endswith(ext) for ext in extensions):
+                    rel_path = os.path.relpath(os.path.join(root, file), repo_path).replace(os.sep, '/')
+                    found.add(rel_path)
+        return found
+
+    def _list_repository_files(self, repo_path: str, limit: int = 60) -> List[str]:
+        """
+        List a sample of the repository's file paths, regardless of
+        language, so the LLM has some awareness of project structure and
+        naming conventions even when no single file is clearly "related"
+        (e.g. a request to add a brand-new file).
+        """
+        paths: List[str] = []
+        for root, dirs, files in os.walk(repo_path):
+            dirs[:] = [d for d in dirs if d not in [
+                '.git', '__pycache__', 'node_modules', '.venv',
+                'venv', 'dist', 'build', '.pytest_cache'
+            ]]
+            for file in sorted(files):
+                if len(paths) >= limit:
+                    return paths
+                paths.append(os.path.relpath(os.path.join(root, file), repo_path).replace(os.sep, '/'))
+        return paths
 
     def _extract_code_snippets(
         self,

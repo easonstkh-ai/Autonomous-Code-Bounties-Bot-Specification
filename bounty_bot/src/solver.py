@@ -61,6 +61,7 @@ class CodeContext(BaseModel):
     stack_traces: List[StackTrace]
     code_snippets: List[CodeSnippet]
     related_files: List[str]
+    repository_file_list: List[str] = Field(default_factory=list)
     summary: str
     extracted_at: datetime
     repository_branch: str = "main"
@@ -272,17 +273,29 @@ class LLMSolver:
     
     def _build_system_prompt(self) -> str:
         """Build system prompt defining LLM role and responsibilities"""
-        return """You are a senior open-source software engineer specializing in rapid bug fixes.
+        return """You are a senior open-source software engineer specializing in rapid bug fixes and small features.
 
 Your task: Analyze the provided Issue description and code context, then generate a unified diff format patch.
 
 Requirements:
 1. Carefully analyze stack traces and related code snippets
-2. Generate a minimal, targeted patch that directly addresses the root cause
-3. Output MUST be in unified diff format (starting with --- and +++ lines)
+2. Generate a minimal, targeted patch that directly addresses the root cause or request
+3. Output MUST be in unified diff format (starting with --- and +++ lines), with paths relative to the
+   repository root (e.g. "--- a/path/to/file", "+++ b/path/to/file") - do not invent or guess a path that
+   isn't shown in the provided context unless you are creating a new file
 4. Avoid unnecessary formatting changes or refactoring
 5. Ensure the fix addresses the fundamental issue, not just symptoms
 6. Include a brief explanation of the fix before the diff
+7. If the task requires a file that does not yet exist (e.g. "Related Files" is empty and the request is to
+   add something new), create it using the standard unified-diff "new file" form:
+       diff --git a/path/to/new_file b/path/to/new_file
+       new file mode 100644
+       --- /dev/null
+       +++ b/path/to/new_file
+       @@ -0,0 +1,N @@
+       +...file contents...
+   Choose the path and naming style by following the conventions visible in the "Repository Files" listing
+   (e.g. where similar files live and how they're named) rather than guessing a generic location.
 
 Output format:
 ---
@@ -335,7 +348,10 @@ Issue Description:
 {code_snippets_text}
 
 Related Files:
-{', '.join(code_context.related_files) if code_context.related_files else 'N/A'}
+{', '.join(code_context.related_files) if code_context.related_files else 'N/A (no existing file looks directly related - this may require creating a new file; see Repository Files below for naming/location conventions)'}
+
+Repository Files (sample, for structure/convention reference):
+{', '.join(code_context.repository_file_list) if code_context.repository_file_list else 'N/A'}
 
 Context Summary:
 {code_context.summary}
