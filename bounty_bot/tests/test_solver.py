@@ -293,6 +293,46 @@ def test_extract_diff_from_response():
         return True
 
 
+def test_extract_new_file_diff_from_response():
+    """New files use /dev/null as the old side of a git diff."""
+    with patch.dict(os.environ, {'GEMINI_API_KEY': 'test-key'}):
+        solver = LLMSolver()
+        response = """```diff
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+new file mode 100644
+--- /dev/null
++++ b/CHANGELOG.md
+@@ -0,0 +1,2 @@
++# Changelog
++\n+```"""
+
+        diff = solver._extract_diff_from_response(response)
+
+        assert solver._parse_diff(diff) == ["CHANGELOG.md"]
+
+
+    def test_extract_fenced_git_diff_from_response():
+        with patch.dict(os.environ, {'GEMINI_API_KEY': 'test-key'}):
+            solver = LLMSolver()
+
+            response = """Here is the patch:
+    ```diff
+    diff --git a/example.py b/example.py
+    index 1234567..89abcde 100644
+    --- a/example.py
+    +++ b/example.py
+    @@ -1 +1 @@
+    -old()
+    +new()
+    ```
+    """
+
+            diff = solver._extract_diff_from_response(response)
+
+        assert diff.startswith("diff --git a/example.py b/example.py")
+        assert "+++ b/example.py" in diff
+
+
 def test_confidence_scoring():
     """Test confidence score calculation"""
     print("\n🧪 Test 7: Confidence Score Calculation")

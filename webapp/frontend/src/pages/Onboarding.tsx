@@ -160,19 +160,23 @@ export function Onboarding() {
 
         {step === 3 && provider !== "claude_code" && (
           <div>
-            <h2 className="text-lg font-semibold text-ink">API 金鑰</h2>
+            <h2 className="text-lg font-semibold text-ink">{provider === "local" ? "本地模型" : "API 金鑰"}</h2>
             <p className="mt-1 text-sm text-muted">
-              你的 {PROVIDERS.find((p) => p.id === provider)?.label} API 金鑰只會存在本機設定檔中。
+              {provider === "local"
+                ? "請先在本機啟動 Ollama，並安裝 qwen2.5-coder:7b。預設端點為 http://127.0.0.1:11434。"
+                : `你的 ${PROVIDERS.find((p) => p.id === provider)?.label} API 金鑰只會存在本機設定檔中。`}
             </p>
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="貼上你的 API 金鑰"
-              className="mt-5 w-full rounded-lg border border-border bg-bg px-3 py-2.5 text-sm text-ink placeholder:text-muted focus:border-primary focus:outline-none"
-            />
+            {provider !== "local" && (
+              <input
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="貼上你的 API 金鑰"
+                className="mt-5 w-full rounded-lg border border-border bg-bg px-3 py-2.5 text-sm text-ink placeholder:text-muted focus:border-primary focus:outline-none"
+              />
+            )}
             {startError && <p className="mt-2 text-xs text-danger">{startError}</p>}
-            <Button className="mt-6 w-full" disabled={!apiKey || starting} onClick={handleStart}>
+            <Button className="mt-6 w-full" disabled={(provider !== "local" && !apiKey) || starting} onClick={handleStart}>
               {starting ? <Loader2 size={15} className="animate-spin" /> : null}
               啟動 Agent →
             </Button>

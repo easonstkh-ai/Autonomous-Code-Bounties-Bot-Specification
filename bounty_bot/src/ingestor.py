@@ -124,6 +124,9 @@ class StackTraceExtractor:
             r'at\s+(\w+)\s+\(([^:]+):(\d+):(\d+)\)',
             r'at\s+([^:]+):(\d+):(\d+)',
         ],
+        'rust': [
+            r'(?:at\s+)?([^\s():]+\.rs):(\d+)(?::\d+)?',
+        ],
     }
 
     @staticmethod
@@ -165,6 +168,13 @@ class StackTraceExtractor:
                             code_line=""
                         )
                         stack_traces.append(stack_trace)
+                    elif language == 'rust' and len(groups) >= 2:
+                        stack_traces.append(StackTrace(
+                            file_path=groups[0],
+                            function_name="<unknown>",
+                            line_number=int(groups[1]),
+                            code_line=""
+                        ))
                 except (ValueError, IndexError) as e:
                     logger.debug(f"Failed to parse stack trace: {e}")
                     continue
