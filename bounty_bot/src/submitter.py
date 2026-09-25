@@ -19,6 +19,7 @@ import json
 import logging
 import re
 import subprocess
+import time
 from datetime import datetime
 from typing import Optional, Dict, Any
 from pathlib import Path
@@ -296,12 +297,51 @@ class AutoSubmitter:
             response.raise_for_status()
             fork_data = response.json()
             fork_url = fork_data["clone_url"] or fork_url
-            logger.info(f"✓ Fork created successfully")
+            logger.info(f"✓ Fork creation accepted, waiting for it to become clonable...")
+            # The GitHub API queues fork creation and responds before the
+            # fork actually exists - cloning it immediately can 404 ("git
+            # clone" -> "Repository not found") even though the API call
+            # above succeeded. Poll until the fork repo is reachable (or
+            # give up and let the caller's clone attempt surface the error).
+            self._wait_for_fork_ready(fork_url)
             return fork_url
+        except requests.HTTPError as e:
+            # A 4xx/5xx here means the fork was never created (most often a
+            # 403 "Resource not accessible by personal access token" - the
+            # configured GITHUB_TOKEN can read the repo but isn't scoped to
+            # create forks). Silently falling back to the guessed fork_url
+            # used to send this straight into a "git clone: Repository not
+            # found" failure several steps later, which hid the real cause -
+            # raise here instead so the actual GitHub API error surfaces.
+            body = e.response.text[:300] if e.response is not None else str(e)
+            raise GitOperationError(
+                f"Failed to create fork of {repository} via GitHub API "
+                f"({e.response.status_code if e.response is not None else '?'}): {body}"
+            ) from None
         except requests.RequestException as e:
             logger.warning(f"Failed to create fork via API: {e}")
             # Fall back to existing fork assumption
             return fork_url
+
+    def _wait_for_fork_ready(
+        self, fork_url: str, timeout_seconds: float = 60.0, poll_interval_seconds: float = 3.0
+    ) -> None:
+        """Poll a freshly-created fork until GitHub reports it as reachable."""
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            try:
+                response = requests.head(
+                    fork_url,
+                    headers={"Authorization": f"token {self.config.github_token}"},
+                    timeout=10
+                )
+                if response.status_code == 200:
+                    logger.info(f"✓ Fork is ready: {fork_url}")
+                    return
+            except requests.RequestException:
+                pass
+            time.sleep(poll_interval_seconds)
+        logger.warning(f"Fork not confirmed ready after {timeout_seconds}s, proceeding anyway: {fork_url}")
 
     def _clone_fork(self, fork_url: str, issue_id: str) -> str:
         """

@@ -1,6 +1,5 @@
 llm:
-  provider: openai
-  model: gpt-4.1-mini
+  provider: claude_code
   api_key: ${OPENAI_API_KEY}
 github:
   token: ${GITHUB_TOKEN}

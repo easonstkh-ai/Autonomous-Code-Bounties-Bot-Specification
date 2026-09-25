@@ -68,6 +68,9 @@ class TestResult(BaseModel):
 class DockerTester:
     """Build and run repository tests inside an isolated Docker container."""
 
+    # pytest's own exit code for "ran successfully, but no tests matched".
+    _NO_TESTS_COLLECTED_EXIT_CODE = 5
+
     def __init__(self, config: Optional[TesterConfig] = None, client: Any = None):
         self.config = config or TesterConfig()
         self.client = client
@@ -206,15 +209,22 @@ class DockerTester:
                 container.remove(force=True)
 
             counts = self._parse_pytest_summary(stdout + "\n" + stderr)
+            # pytest exits 5 when it collected zero tests - e.g. a docs/skill
+            # repo with no test suite at all. That's not a test failure, so
+            # treat it the same as a pass rather than blocking the pipeline
+            # on tests that were never going to exist.
+            no_tests_collected = exit_code == self._NO_TESTS_COLLECTED_EXIT_CODE
+            passed = exit_code == 0 or no_tests_collected
             return TestResult(
-                status="READY_FOR_PR" if exit_code == 0 else "TESTS_FAILED",
-                passed=exit_code == 0,
+                status="READY_FOR_PR" if passed else "TESTS_FAILED",
+                passed=passed,
                 exit_code=exit_code,
                 command=command,
                 image=image,
                 duration_seconds=(datetime.now() - started_at).total_seconds(),
                 stdout=stdout,
                 stderr=stderr,
+                error="此倉庫沒有可執行的自動化測試，已視為通過。" if no_tests_collected else None,
                 **counts,
             )
         except (DockerException, OSError, ValueError) as exc:
