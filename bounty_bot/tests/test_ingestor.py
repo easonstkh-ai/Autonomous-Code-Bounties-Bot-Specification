@@ -79,6 +79,30 @@ def test_stack_trace_extraction_javascript():
     print("✅ PASS - JavaScript Stack Trace Extraction")
 
 
+def test_stack_trace_extraction_rust():
+    traces = StackTraceExtractor.extract_from_text(
+        "panic at src/layer_norm.rs:42:7", language="Rust"
+    )
+
+    assert len(traces) == 1
+    assert traces[0].file_path == "src/layer_norm.rs"
+    assert traces[0].line_number == 42
+
+
+def test_documentation_issue_finds_markdown_files():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        Path(tmpdir, "CHANGELOG.md").write_text("# Changelog", encoding="utf-8")
+        Path(tmpdir, "README.md").write_text("# Project", encoding="utf-8")
+
+        ingestor = CodeIngestor(cache_dir=tmpdir)
+        files = ingestor._find_related_files(
+            tmpdir, [], "python", "Generate a structured CHANGELOG", "Document releases"
+        )
+
+        assert "CHANGELOG.md" in files
+        assert "README.md" in files
+
+
 # ==================== Test Code Parser ====================
 
 def test_code_snippet_model():

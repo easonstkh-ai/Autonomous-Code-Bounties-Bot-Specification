@@ -19,6 +19,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import shutil
+import textwrap
 
 from pydantic import BaseModel, Field
 import yaml
@@ -95,6 +96,7 @@ class SolverConfig(BaseModel):
     temperature: float = 0.7
     max_tokens: int = 4096
     timeout_seconds: int = 600
+    base_url: Optional[str] = None
 
 
 class LLMSolver:
@@ -113,6 +115,7 @@ class LLMSolver:
         """Initialize LLMSolver with configuration"""
         self.config = config or SolverConfig()
         self.solver_id = self._generate_solver_id()
+        self.last_apply_error = ""
         
         # Load settings from YAML
         self.settings = self._load_settings()
@@ -149,7 +152,7 @@ class LLMSolver:
         self.config.model = self.config.model or yaml_model
         if not self.config.model:
             self.config.model = {
-                "gemini": "gemini-3.1-pro-preview",
+                "gemini": "gemini-3.6-flash",
                 "openai": "gpt-4.1-mini",
                 "claude_code": "sonnet",
             }[self.provider]
@@ -187,14 +190,15 @@ class LLMSolver:
                     genai.configure(api_key=api_key)
                     self.model = genai.GenerativeModel(self.config.model)
         else:
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
+            api_key = os.getenv("OPENAI_API_KEY") if self.provider == "openai" else os.getenv("LOCAL_LLM_API_KEY", "ollama")
+            if self.provider == "openai" and not api_key:
                 raise ValueError("OPENAI_API_KEY is required when llm.provider is openai")
             try:
                 from openai import OpenAI
             except ImportError as exc:
                 raise ValueError("The openai package is required for llm.provider=openai") from exc
-            self.model = OpenAI(api_key=api_key, timeout=self.config.timeout_seconds)
+            base_url = self.config.base_url or llm_settings.get("local_base_url") if self.provider == "local" else None
+            self.model = OpenAI(api_key=api_key, base_url=base_url, timeout=self.config.timeout_seconds)
 
         logger.info(
             f"LLMSolver initialized (ID: {self.solver_id}, "
@@ -405,7 +409,10 @@ Context Summary:
 
 Task: Generate a unified diff format patch to fix this issue.
 The patch should be directly applicable to the repository's {code_context.repository_branch} branch.
-Focus on the minimal changes needed to resolve the issue."""
+Focus on the minimal changes needed to resolve the issue.
+Even when Related Files is N/A, you must return an applicable unified diff if the
+issue can be resolved by adding or updating a repository file. Do not return only
+an explanation or a Markdown document outside the diff."""
         
         return prompt
     
@@ -647,39 +654,51 @@ Focus on the minimal changes needed to resolve the issue."""
     
     def _extract_diff_from_response(self, response: str) -> str:
         """Extract unified diff from LLM response"""
-        # Find the first occurrence of --- (diff start marker)
-        start = response.find('--- ')
-        if start == -1:
-            start = response.find('---')
-            if start == -1:
-                raise ValueError("No unified diff found in API response")
-        
-        # Extract from --- onwards
-        rest = response[start:]
-        lines = rest.split('\n')
-        
-        diff_lines = []
-        in_diff = False
-        
-        for line in lines:
-            # Unified diff lines start with ---, +++, @@, +, -, or space
-            if line.startswith(('--- ', '+++ ', '@@', '-', '+', ' ')):
-                in_diff = True
-                diff_lines.append(line)
-            elif in_diff:
-                # Stop when we hit a line that doesn't look like diff
-                if line.strip() and not line.startswith(('--- ', '+++ ', '@@', '-', '+', ' ', '\\')):
-                    break
-                elif line.strip() == '':
-                    # Keep empty lines within diff
-                    diff_lines.append(line)
-                else:
-                    diff_lines.append(line)
-        
-        if not diff_lines:
+        # Models often indent a fenced diff as part of a Markdown list or quote.
+        # Remove that common indentation while preserving diff content spacing.
+        lines = textwrap.dedent(response.replace("\r\n", "\n")).split("\n")
+        start = next(
+            (
+                index
+                for index, line in enumerate(lines)
+                if line.startswith("diff --git ")
+                or line.startswith("--- a/")
+                or line.startswith("--- /dev/null")
+            ),
+            None,
+        )
+        if start is None:
             raise ValueError("No unified diff found in API response")
-        
-        diff = '\n'.join(diff_lines).strip()
+
+        diff_lines = []
+        diff_prefixes = (
+            "diff --git ",
+            "index ",
+            "new file mode ",
+            "deleted file mode ",
+            "old mode ",
+            "new mode ",
+            "similarity index ",
+            "rename from ",
+            "rename to ",
+            "--- ",
+            "+++ ",
+            "@@",
+            "+",
+            "-",
+            " ",
+            "\\ No newline",
+        )
+        for line in lines[start:]:
+            if line.strip().startswith("```"):
+                break
+            if line.strip() and not line.startswith(diff_prefixes):
+                break
+            diff_lines.append(line)
+
+        diff = "\n".join(diff_lines).strip()
+        if not diff or "--- " not in diff or "+++ " not in diff:
+            raise ValueError("No unified diff found in API response")
         return diff
     
     def _extract_summary_from_response(self, response: str) -> str:
@@ -971,6 +990,7 @@ Focus on the minimal changes needed to resolve the issue."""
                 os.unlink(patch_file)
 
         except Exception as e:
+            self.last_apply_error = str(e)
             logger.error(f"✗ Error applying patch: {e}")
             return False
 
