@@ -80,7 +80,7 @@ def _run(run_id, bounty, run_store, log, fail) -> None:
             bounty["id"], bounty["title"], bounty.get("description", ""), context, context.repository_path,
             on_log=log,
         )
-        applied = solver.apply_patch_to_repo(patch_result, context.repository_path)
+        applied = solver.apply_patch_to_repo(patch_result, context.repository_path, on_log=log)
     except Exception as exc:
         fail("generating_patch", f"生成修補程式失敗：{exc}")
         return

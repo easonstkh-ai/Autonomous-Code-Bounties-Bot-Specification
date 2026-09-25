@@ -843,18 +843,29 @@ Focus on the minimal changes needed to resolve the issue."""
     def apply_patch_to_repo(
         self,
         patch_result: PatchResult,
-        repository_path: str
+        repository_path: str,
+        on_log: Optional[Callable[[str], None]] = None
     ) -> bool:
         """
         Apply patch to local repository (dry-run first)
-        
+
         Args:
             patch_result: PatchResult from solve_issue
             repository_path: Path to repository
-        
+            on_log: Optional callback for surfacing *why* application failed
+                (git apply/patch stderr, the diff itself) - the return value
+                alone doesn't say enough to debug a bad LLM-generated diff.
+
         Returns:
             True if patch applied successfully
         """
+        def emit(message: str) -> None:
+            if on_log:
+                try:
+                    on_log(message)
+                except Exception:
+                    logger.debug("on_log callback raised", exc_info=True)
+
         try:
             logger.info(f"Applying patch to {repository_path}...")
 
@@ -911,6 +922,7 @@ Focus on the minimal changes needed to resolve the issue."""
                         "git apply failed and no 'patch' executable could be found "
                         "(checked PATH and Git's bundled usr/bin) - cannot fall back"
                     )
+                    emit("[除錯] 找不到 patch 執行檔，且 git apply 失敗：" + git_dry_run.stderr[:1000])
                     return False
 
                 result = subprocess.run(
@@ -925,6 +937,12 @@ Focus on the minimal changes needed to resolve the issue."""
 
                 if result.returncode != 0:
                     logger.error(f"Patch dry-run failed: {result.stderr}")
+                    emit(
+                        "[除錯] 套用修補程式失敗，git apply 與 patch 都被拒絕：\n"
+                        f"git apply --check: {git_dry_run.stderr[:800]}\n"
+                        f"patch --dry-run: {result.stderr[:800]}\n"
+                        f"產生的 diff（前 3000 字）：\n{patch_result.diff[:3000]}"
+                    )
                     return False
 
                 logger.info("✓ Patch dry-run successful")
@@ -945,6 +963,7 @@ Focus on the minimal changes needed to resolve the issue."""
                     return True
                 else:
                     logger.error(f"Patch application failed: {result.stderr}")
+                    emit(f"[除錯] patch 執行失敗（dry-run 通過但實際套用失敗）：{result.stderr[:1000]}")
                     return False
 
             finally:
