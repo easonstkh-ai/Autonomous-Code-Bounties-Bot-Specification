@@ -1,13 +1,16 @@
-"""In-memory state + on-disk settings persistence for the web backend.
+"""In-memory state + on-disk persistence for the web backend.
 
 Kept deliberately simple (no database): a single agent runs on behalf of a
-single user, so a few thread-safe in-memory stores are enough. Settings that
-must survive a restart (API keys, filters) are read from / written to the
-same .env and settings.yaml files the CLI bot already uses.
+single user. Settings that must survive a restart (API keys, filters) are
+read from / written to the same .env and settings.yaml files the CLI bot
+already uses. Run history (earnings, which bounties were solved) is written
+to a local JSON file (see RunStore) - restarting the backend used to wipe
+this out entirely, silently losing the record of what was earned/completed.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from datetime import datetime
@@ -22,6 +25,7 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ENV_PATH = PROJECT_ROOT / ".env"
 SETTINGS_PATH = PROJECT_ROOT / "bounty_bot" / "config" / "settings.yaml"
+RUNS_PATH = PROJECT_ROOT / "webapp" / "backend" / "data" / "runs.json"
 
 STAGE_DEFS: list[tuple[str, str]] = [
     ("issue_found", "發現 Issue"),
@@ -82,7 +86,14 @@ def get_settings_snapshot() -> dict:
     submission = yaml_data.get("submission", {})
 
     provider = (llm.get("provider") or "gemini").lower()
-    api_key_set = bool(env.get("OPENAI_API_KEY")) if provider == "openai" else bool(env.get("GEMINI_API_KEY"))
+    if provider == "openai":
+        api_key_set = bool(env.get("OPENAI_API_KEY"))
+    elif provider == "claude_code":
+        # Uses the locally-installed Claude Code CLI's own login instead of
+        # an API key stored in .env.
+        api_key_set = True
+    else:
+        api_key_set = bool(env.get("GEMINI_API_KEY"))
 
     return {
         "github_connected": bool(env.get("GITHUB_TOKEN")) and bool(env.get("GITHUB_USERNAME")),
@@ -113,12 +124,22 @@ def apply_settings_patch(patch: dict) -> None:
     yaml_data.setdefault("submission", {})
 
     if patch.get("ai_provider") is not None:
-        yaml_data["llm"]["provider"] = patch["ai_provider"]
+        new_provider = patch["ai_provider"]
+        # There's no UI to set `model` directly, so a stale model left over
+        # from the previous provider (e.g. "gpt-4.1-mini" from OpenAI) would
+        # otherwise get sent to whatever provider is switched to. Clear it
+        # on a real provider change so LLMSolver falls back to that
+        # provider's own default model.
+        if new_provider != yaml_data["llm"].get("provider"):
+            yaml_data["llm"].pop("model", None)
+        yaml_data["llm"]["provider"] = new_provider
 
     if patch.get("api_key"):
         provider = (patch.get("ai_provider") or yaml_data["llm"].get("provider") or "gemini").lower()
-        env_key = "OPENAI_API_KEY" if provider == "openai" else "GEMINI_API_KEY"
-        write_env_values({env_key: patch["api_key"]})
+        if provider == "openai":
+            write_env_values({"OPENAI_API_KEY": patch["api_key"]})
+        elif provider != "claude_code":
+            write_env_values({"GEMINI_API_KEY": patch["api_key"]})
 
     if patch.get("languages") is not None:
         yaml_data["filters"]["languages"] = patch["languages"]
@@ -209,6 +230,51 @@ class RunStore:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._runs: dict[str, dict] = {}
+        self._load()
+
+    # -------- persistence --------
+    # Every mutation below saves the full run table back to RUNS_PATH so a
+    # backend restart (routine during development, or a crash) doesn't
+    # silently lose the earnings/completion history - previously this store
+    # was purely in-memory and every restart reset "執行紀錄" to empty.
+
+    def _load(self) -> None:
+        if not RUNS_PATH.exists():
+            return
+        try:
+            raw = json.loads(RUNS_PATH.read_text(encoding="utf-8"))
+            for run_id, run in raw.items():
+                run["started_at"] = datetime.fromisoformat(run["started_at"])
+                if run.get("status") == "running":
+                    # Its background thread died with the previous process -
+                    # nothing will ever move it out of "running" again, which
+                    # would otherwise show as a permanently spinning run.
+                    run["status"] = "failed"
+                    run["error_message"] = "伺服器重新啟動時此任務仍在執行中，狀態未知，請重試"
+                    for stage in run["stages"]:
+                        if stage["status"] == "running":
+                            stage["status"] = "failed"
+                self._runs[run_id] = run
+            logger.info(f"Loaded {len(self._runs)} run(s) from {RUNS_PATH}")
+            self._save_locked()  # persist any "running" -> "failed" correction above
+        except Exception:
+            logger.exception(f"Failed to load run history from {RUNS_PATH}; starting empty")
+
+    def _save_locked(self) -> None:
+        # Caller must already hold self._lock.
+        try:
+            RUNS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                run_id: {**run, "started_at": run["started_at"].isoformat()}
+                for run_id, run in self._runs.items()
+            }
+            tmp_path = RUNS_PATH.with_suffix(".json.tmp")
+            tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_path.replace(RUNS_PATH)  # atomic on both POSIX and Windows
+        except Exception:
+            logger.exception(f"Failed to save run history to {RUNS_PATH}")
+
+    # -------- mutations --------
 
     def create(self, run_id: str, bounty: dict) -> dict:
         run = {
@@ -226,6 +292,7 @@ class RunStore:
         }
         with self._lock:
             self._runs[run_id] = run
+            self._save_locked()
         return run
 
     def get(self, run_id: str) -> Optional[dict]:
@@ -245,6 +312,7 @@ class RunStore:
                 if stage["key"] == stage_key:
                     stage["status"] = status
                     break
+            self._save_locked()
 
     def reset_stages(self, run_id: str) -> None:
         with self._lock:
@@ -254,30 +322,35 @@ class RunStore:
             run["stages"] = fresh_stages()
             run["status"] = "running"
             run["error_message"] = None
+            self._save_locked()
 
     def set_status(self, run_id: str, status: str) -> None:
         with self._lock:
             run = self._runs.get(run_id)
             if run:
                 run["status"] = status
+                self._save_locked()
 
     def set_error(self, run_id: str, message: str) -> None:
         with self._lock:
             run = self._runs.get(run_id)
             if run:
                 run["error_message"] = message
+                self._save_locked()
 
     def set_pr_url(self, run_id: str, url: str) -> None:
         with self._lock:
             run = self._runs.get(run_id)
             if run:
                 run["pr_url"] = url
+                self._save_locked()
 
     def append_log(self, run_id: str, message: str) -> None:
         with self._lock:
             run = self._runs.get(run_id)
             if run:
                 run["logs"].append(message)
+                self._save_locked()
 
 
 # ==================== Agent controller ====================
